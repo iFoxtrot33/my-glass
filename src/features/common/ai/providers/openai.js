@@ -77,7 +77,7 @@ async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey =
                 rate: 24000,
               },
               transcription: {
-                model: 'gpt-4o-mini-transcribe',
+                model: config.model || 'gpt-4o-mini-transcribe',
                 prompt: config.prompt || '',
                 language: language || 'en',
               },
@@ -165,29 +165,47 @@ async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey =
 }
 
 /**
+ * Builds Chat Completions request params for the given model.
+ * GPT-5 family models reject `max_tokens` (use `max_completion_tokens`) and
+ * custom `temperature`; reasoning effort is pinned to 'low' so reasoning
+ * tokens don't exhaust the small completion budgets used by this app.
+ */
+function buildChatParams({ model, messages, temperature, maxTokens, stream = false }) {
+  const params = { model, messages };
+  if (stream) params.stream = true;
+  if (/^gpt-5/i.test(model)) {
+    params.max_completion_tokens = maxTokens;
+    // 'none' (no thinking) gives the fastest time-to-first-token; only the
+    // gpt-5.4 and gpt-5.1 families accept it — gpt-5.5 starts at 'low'.
+    params.reasoning_effort = /^gpt-5\.[14](-|$)/i.test(model) ? 'none' : 'low';
+  } else {
+    params.temperature = temperature;
+    params.max_tokens = maxTokens;
+  }
+  return params;
+}
+
+/**
  * Creates an OpenAI LLM instance
  * @param {object} opts - Configuration options
  * @param {string} opts.apiKey - OpenAI API key
- * @param {string} [opts.model='gpt-4.1'] - Model name
+ * @param {string} [opts.model='gpt-5.4'] - Model name
  * @param {number} [opts.temperature=0.7] - Temperature
  * @param {number} [opts.maxTokens=2048] - Max tokens
  * @param {boolean} [opts.usePortkey=false] - Whether to use Portkey
  * @param {string} [opts.portkeyVirtualKey] - Portkey virtual key
  * @returns {object} LLM instance
  */
-function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2048, usePortkey = false, portkeyVirtualKey, ...config }) {
+function createLLM({ apiKey, model = 'gpt-5.4', temperature = 0.7, maxTokens = 2048, usePortkey = false, portkeyVirtualKey, ...config }) {
   const client = new OpenAI({ apiKey });
-  
+
   const callApi = async (messages) => {
     if (!usePortkey) {
-      const response = await client.chat.completions.create({
-        model: model,
-        messages: messages,
-        temperature: temperature,
-        max_tokens: maxTokens
-      });
+      const response = await client.chat.completions.create(
+        buildChatParams({ model, messages, temperature, maxTokens })
+      );
       return {
-        content: response.choices[0].message.content.trim(),
+        content: (response.choices[0].message.content || '').trim(),
         raw: response
       };
     } else {
@@ -199,12 +217,7 @@ function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2
             'x-portkey-virtual-key': portkeyVirtualKey || apiKey,
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-            model: model,
-            messages,
-            temperature,
-            max_tokens: maxTokens,
-        }),
+        body: JSON.stringify(buildChatParams({ model, messages, temperature, maxTokens })),
       });
 
       if (!response.ok) {
@@ -213,7 +226,7 @@ function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2
 
       const result = await response.json();
       return {
-        content: result.choices[0].message.content.trim(),
+        content: (result.choices[0].message.content || '').trim(),
         raw: result
       };
     }
@@ -264,14 +277,14 @@ function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2
  * Creates an OpenAI streaming LLM instance
  * @param {object} opts - Configuration options
  * @param {string} opts.apiKey - OpenAI API key
- * @param {string} [opts.model='gpt-4.1'] - Model name
+ * @param {string} [opts.model='gpt-5.4'] - Model name
  * @param {number} [opts.temperature=0.7] - Temperature
  * @param {number} [opts.maxTokens=2048] - Max tokens
  * @param {boolean} [opts.usePortkey=false] - Whether to use Portkey
  * @param {string} [opts.portkeyVirtualKey] - Portkey virtual key
  * @returns {object} Streaming LLM instance
  */
-function createStreamingLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2048, usePortkey = false, portkeyVirtualKey, ...config }) {
+function createStreamingLLM({ apiKey, model = 'gpt-5.4', temperature = 0.7, maxTokens = 2048, usePortkey = false, portkeyVirtualKey, ...config }) {
   return {
     streamChat: async (messages) => {
       const fetchUrl = usePortkey 
@@ -292,13 +305,7 @@ function createStreamingLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxT
       const response = await fetch(fetchUrl, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          model: model,
-          messages,
-          temperature,
-          max_tokens: maxTokens,
-          stream: true,
-        }),
+        body: JSON.stringify(buildChatParams({ model, messages, temperature, maxTokens, stream: true })),
       });
 
       if (!response.ok) {

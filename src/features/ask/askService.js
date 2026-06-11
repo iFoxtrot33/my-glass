@@ -15,6 +15,7 @@ const getWindowPool = () => {
 const sessionRepository = require('../common/repositories/session');
 const askRepository = require('./repositories');
 const { getSystemPrompt } = require('../common/prompts/promptBuilder');
+const { getPromptRuntimeOptions } = require('../common/prompts/promptContext');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('os');
@@ -47,23 +48,23 @@ async function captureScreenshot(options = {}) {
 
             if (sharp) {
                 try {
-                    // Try using sharp for optimal image processing
-                    const resizedBuffer = await sharp(imageBuffer)
+                    // Try using sharp for optimal image processing; resolveWithObject
+                    // returns the output dimensions without re-decoding the buffer
+                    const { data: resizedBuffer, info } = await sharp(imageBuffer)
                         .resize({ height: 384 })
                         .jpeg({ quality: 80 })
-                        .toBuffer();
+                        .toBuffer({ resolveWithObject: true });
 
                     const base64 = resizedBuffer.toString('base64');
-                    const metadata = await sharp(resizedBuffer).metadata();
 
                     lastScreenshot = {
                         base64,
-                        width: metadata.width,
-                        height: metadata.height,
+                        width: info.width,
+                        height: info.height,
                         timestamp: Date.now(),
                     };
 
-                    return { success: true, base64, width: metadata.width, height: metadata.height };
+                    return { success: true, base64, width: info.width, height: info.height };
                 } catch (sharpError) {
                     console.warn('Sharp module failed, falling back to basic image processing:', sharpError.message);
                 }
@@ -150,7 +151,17 @@ class AskService {
         let shouldSendScreenOnly = false;
         if (inputScreenOnly && this.state.showTextInput && askWindow && askWindow.isVisible()) {
             shouldSendScreenOnly = true;
-            await this.sendMessage('', []);
+            // Include the live transcript so spoken questions get answered,
+            // not just whatever is on the screen. Lazy require: featureBridge
+            // requires both services, requiring listenService at module load
+            // here would risk a cycle.
+            let conversationHistory = [];
+            try {
+                conversationHistory = require('../listen/listenService').getConversationHistory();
+            } catch (error) {
+                console.warn('[AskService] Could not fetch conversation history:', error.message);
+            }
+            await this.sendMessage('', conversationHistory);
             return;
         }
 
@@ -254,20 +265,25 @@ class AskService {
 
             const conversationHistory = this._formatConversationForPrompt(conversationHistoryRaw);
 
-            const systemPrompt = getSystemPrompt('pickle_glass_analysis', conversationHistory, false);
+            const promptOptions = await getPromptRuntimeOptions();
+            const systemPrompt = getSystemPrompt('interview_assistant', '', false, null, {
+                ...promptOptions,
+                conversationHistory,
+            });
+            if (process.env.GLASS_DEBUG_PROMPT) {
+                console.log('[AskService] System prompt:\n', systemPrompt);
+            }
+
+            const requestText = userPrompt.trim()
+                ? `User Request: ${userPrompt.trim()}`
+                : 'No typed request. Help with the current moment of the conversation: if a question was just asked at the end of the transcript, answer it; otherwise use the screen if relevant.';
 
             const messages = [
                 { role: 'system', content: systemPrompt },
                 {
                     role: 'user',
                     content: [
-                        { type: 'text', text: `User Request: ${userPrompt.trim()}
-
-**LANGUAGE INSTRUCTION:**
-- Respond in Traditional Chinese (繁體中文)
-- Keep code snippets, technical terms, API names, libraries, frameworks, and proper nouns in English
-- Translate all explanations, answers, and suggestions to Traditional Chinese
-- Preserve all emojis and formatting` },
+                        { type: 'text', text: requestText },
                     ],
                 },
             ];
@@ -317,13 +333,7 @@ class AskService {
                         { role: 'system', content: systemPrompt },
                         {
                             role: 'user',
-                            content: `User Request: ${userPrompt.trim()}
-
-**LANGUAGE INSTRUCTION:**
-- Respond in Traditional Chinese (繁體中文)
-- Keep code snippets, technical terms, API names, libraries, frameworks, and proper nouns in English
-- Translate all explanations, answers, and suggestions to Traditional Chinese
-- Preserve all emojis and formatting`
+                            content: requestText
                         }
                     ];
 
@@ -382,6 +392,29 @@ class AskService {
     async _processStream(reader, askWin, sessionId, signal) {
         const decoder = new TextDecoder();
         let fullResponse = '';
+        // SSE lines and even multi-byte UTF-8 characters can be split across
+        // network chunks; decode in streaming mode and keep the trailing
+        // partial line in a buffer, otherwise token deltas get silently lost.
+        let buffer = '';
+
+        const handleSseLine = (line) => {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) return false;
+            const data = trimmed.substring(6);
+            if (data === '[DONE]') return true;
+            try {
+                const json = JSON.parse(data);
+                const token = json.choices[0]?.delta?.content || '';
+                if (token) {
+                    fullResponse += token;
+                    this.state.currentResponse = fullResponse;
+                    this._broadcastState();
+                }
+            } catch (error) {
+                console.warn('[AskService] Skipped unparseable SSE line:', trimmed.slice(0, 120));
+            }
+            return false;
+        };
 
         try {
             this.state.isLoading = false;
@@ -391,28 +424,17 @@ class AskService {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n').filter(line => line.trim() !== '');
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // keep the incomplete trailing line for the next chunk
 
                 for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.substring(6);
-                        if (data === '[DONE]') {
-                            return; 
-                        }
-                        try {
-                            const json = JSON.parse(data);
-                            const token = json.choices[0]?.delta?.content || '';
-                            if (token) {
-                                fullResponse += token;
-                                this.state.currentResponse = fullResponse;
-                                this._broadcastState();
-                            }
-                        } catch (error) {
-                        }
-                    }
+                    if (handleSseLine(line)) return;
                 }
             }
+            // flush whatever the decoder/buffer still holds after the stream ended
+            buffer += decoder.decode();
+            if (buffer.trim()) handleSseLine(buffer);
         } catch (streamError) {
             if (signal.aborted) {
                 console.log(`[AskService] Stream reading was intentionally cancelled. Reason: ${signal.reason}`);

@@ -37,8 +37,9 @@ class GeminiProvider {
 async function createSTT({ apiKey, language = "en-US", callbacks = {}, ...config }) {
   const liveClient = new GoogleGenAI({ vertexai: false, apiKey })
 
-  // Language code BCP-47 conversion
-  const lang = language.includes("-") ? language : `${language}-US`
+  // Language code BCP-47 conversion (bare ISO codes must map to a real region)
+  const BCP47_BY_LANGUAGE = { en: 'en-US', ru: 'ru-RU' };
+  const lang = language.includes("-") ? language : (BCP47_BY_LANGUAGE[language] || `${language}-US`)
 
   const session = await liveClient.live.connect({
 

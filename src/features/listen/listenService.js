@@ -108,12 +108,13 @@ class ListenService {
 
     async handleTranscriptionComplete(speaker, text) {
         console.log(`[ListenService] Transcription complete: ${speaker} - ${text}`);
-        
+
+        // Add to the in-memory history first (synchronously), so consumers
+        // reading it right after a flush — like Ask — see this turn.
+        this.summaryService.addConversationTurn(speaker, text);
+
         // Save to database
         await this.saveConversationTurn(speaker, text);
-        
-        // Add to summary service for analysis
-        this.summaryService.addConversationTurn(speaker, text);
     }
 
     async saveConversationTurn(speaker, transcription) {
@@ -167,7 +168,7 @@ class ListenService {
         }
     }
 
-    async initializeSession(language = 'en') {
+    async initializeSession(language = null) {
         if (this.isInitializingSession) {
             console.log('Session initialization already in progress.');
             return false;
@@ -176,6 +177,19 @@ class ListenService {
         this.isInitializingSession = true;
         this.sendToRenderer('session-initializing', true);
         this.sendToRenderer('update-status', 'Initializing sessions...');
+
+        if (!language) {
+            try {
+                // Lazy require: settingsService transitively requires askService
+                const settingsService = require('../settings/settingsService');
+                const settings = await settingsService.getSettings();
+                language = settings.dialogLanguage || 'en';
+            } catch (error) {
+                console.warn('[ListenService] Failed to read dialog language from settings:', error.message);
+                language = 'en';
+            }
+        }
+        console.log(`[ListenService] STT language: ${language}`);
 
         try {
             // Initialize database session
@@ -279,6 +293,9 @@ class ListenService {
     }
 
     getConversationHistory() {
+        // Push any debounced/partial utterances into the history first, so
+        // a question spoken a moment ago is included in the Ask prompt.
+        this.sttService.flushPendingTranscriptions();
         return this.summaryService.getConversationHistory();
     }
 

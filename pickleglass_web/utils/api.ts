@@ -538,6 +538,23 @@ export const deletePreset = async (id: string): Promise<void> => {
   }
 };
 
+// The active preset lives in the desktop app's settings (it is injected into
+// AI prompts with top priority), so these always go through the local API.
+export const getActivePresetId = async (): Promise<string | null> => {
+  const response = await apiCall(`/api/presets/active`, { method: 'GET' });
+  if (!response.ok) throw new Error('Failed to fetch active preset');
+  const data = await response.json();
+  return data.id || null;
+};
+
+export const setActivePreset = async (id: string | null): Promise<void> => {
+  const response = await apiCall(`/api/presets/active`, {
+    method: 'POST',
+    body: JSON.stringify({ id }),
+  });
+  if (!response.ok) throw new Error('Failed to set active preset');
+};
+
 export interface BatchData {
     profile?: UserProfile;
     presets?: PromptPreset[];

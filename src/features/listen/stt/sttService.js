@@ -127,6 +127,25 @@ class SttService {
         }
     }
 
+    /**
+     * Immediately flushes utterances still held by the completion debounce
+     * (and any in-flight partials), so callers reading the conversation
+     * history right now (e.g. Ask) see the latest speech instead of waiting
+     * out COMPLETION_DEBOUNCE_MS.
+     */
+    flushPendingTranscriptions() {
+        if (this.myCompletionTimer) {
+            clearTimeout(this.myCompletionTimer);
+            this.myCompletionTimer = null;
+        }
+        if (this.theirCompletionTimer) {
+            clearTimeout(this.theirCompletionTimer);
+            this.theirCompletionTimer = null;
+        }
+        this.flushMyCompletion();
+        this.flushTheirCompletion();
+    }
+
     debounceMyCompletion(text) {
         if (this.modelInfo?.provider === 'gemini') {
             this.myCompletionBuffer += text;
@@ -456,6 +475,7 @@ class SttService {
         
         const sttOptions = {
             apiKey: this.modelInfo.apiKey,
+            model: this.modelInfo.model,
             language: effectiveLanguage,
             usePortkey: this.modelInfo.provider === 'openai-glass',
             portkeyVirtualKey: this.modelInfo.provider === 'openai-glass' ? this.modelInfo.apiKey : undefined,

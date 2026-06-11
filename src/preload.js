@@ -232,6 +232,8 @@ contextBridge.exposeInMainWorld('api', {
     downloadWhisperModel: (modelId) => ipcRenderer.invoke('whisper:download-model', modelId),
     
     // Settings Management
+    getSettings: () => ipcRenderer.invoke('settings:get-settings'),
+    saveSettings: (settings) => ipcRenderer.invoke('settings:save-settings', settings),
     getPresets: () => ipcRenderer.invoke('settings:getPresets'),
     getAutoUpdate: () => ipcRenderer.invoke('settings:get-auto-update'),
     setAutoUpdate: (isEnabled) => ipcRenderer.invoke('settings:set-auto-update', isEnabled),

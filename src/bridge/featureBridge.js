@@ -17,6 +17,8 @@ module.exports = {
   // Renderer로부터의 요청을 수신하고 서비스로 전달
   initialize() {
     // Settings Service
+    ipcMain.handle('settings:get-settings', async () => await settingsService.getSettings());
+    ipcMain.handle('settings:save-settings', async (event, settings) => await settingsService.saveSettings(settings));
     ipcMain.handle('settings:getPresets', async () => await settingsService.getPresets());
     ipcMain.handle('settings:get-auto-update', async () => await settingsService.getAutoUpdateSetting());
     ipcMain.handle('settings:set-auto-update', async (event, isEnabled) => await settingsService.setAutoUpdateSetting(isEnabled));  
@@ -79,7 +81,11 @@ module.exports = {
     ipcMain.handle('ollama:shutdown', async (event, force = false) => await ollamaService.handleShutdown(force));
 
     // Ask
-    ipcMain.handle('ask:sendQuestionFromAsk', async (event, userPrompt) => await askService.sendMessage(userPrompt));
+    ipcMain.handle('ask:sendQuestionFromAsk', async (event, userPrompt) => {
+      // Ask must see the live transcript too, not just the screenshot
+      const conversationHistory = listenService.getConversationHistory();
+      return await askService.sendMessage(userPrompt, conversationHistory);
+    });
     ipcMain.handle('ask:sendQuestionFromSummary', async (event, userPrompt) => {
       // Get conversation history from Listen feature to provide context
       const conversationHistory = listenService.getConversationHistory();

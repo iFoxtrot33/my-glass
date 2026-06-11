@@ -1,8 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { ChevronDown, Plus, Copy } from 'lucide-react'
-import { getPresets, updatePreset, createPreset, PromptPreset } from '@/utils/api'
+import { ChevronDown, Plus, Copy, Zap } from 'lucide-react'
+import { getPresets, updatePreset, createPreset, getActivePresetId, setActivePreset, PromptPreset } from '@/utils/api'
 
 export default function PersonalizePage() {
   const [allPresets, setAllPresets] = useState<PromptPreset[]>([]);
@@ -12,6 +12,8 @@ export default function PersonalizePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
+  const [activePresetId, setActivePresetIdState] = useState<string | null>(null);
+  const [activating, setActivating] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -19,11 +21,17 @@ export default function PersonalizePage() {
         setLoading(true);
         const presetsData = await getPresets();
         setAllPresets(presetsData);
-        
+
         if (presetsData.length > 0) {
           const firstUserPreset = presetsData.find(p => p.is_default === 0) || presetsData[0];
           setSelectedPreset(firstUserPreset);
           setEditorContent(firstUserPreset.prompt);
+        }
+
+        try {
+          setActivePresetIdState(await getActivePresetId());
+        } catch (error) {
+          console.warn('Active preset state unavailable:', error);
         }
       } catch (error) {
         console.error("Failed to fetch presets:", error);
@@ -31,9 +39,24 @@ export default function PersonalizePage() {
         setLoading(false);
       }
     };
-    
+
     fetchData();
   }, []);
+
+  const handleToggleActive = async () => {
+    if (!selectedPreset || activating) return;
+    const makeActive = activePresetId !== selectedPreset.id;
+    try {
+      setActivating(true);
+      await setActivePreset(makeActive ? selectedPreset.id : null);
+      setActivePresetIdState(makeActive ? selectedPreset.id : null);
+    } catch (error) {
+      console.error('Failed to update active preset:', error);
+      alert('Failed to update active preset. See console for details.');
+    } finally {
+      setActivating(false);
+    }
+  };
 
   const handlePresetClick = (preset: PromptPreset) => {
     if (isDirty && !window.confirm("You have unsaved changes. Are you sure you want to switch?")) {
@@ -165,6 +188,23 @@ export default function PersonalizePage() {
               <h1 className="text-3xl font-bold text-gray-900">Personalize</h1>
             </div>
             <div className="flex gap-2">
+              {selectedPreset && (
+                <button
+                  onClick={handleToggleActive}
+                  disabled={activating}
+                  title={activePresetId === selectedPreset.id
+                    ? 'This preset is injected into Glass prompts. Click to deactivate.'
+                    : 'Inject this preset into Glass prompts with top priority.'}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 text-white disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 ${
+                    activePresetId === selectedPreset.id
+                      ? 'bg-emerald-600 hover:bg-emerald-700'
+                      : 'bg-purple-600 hover:bg-purple-700'
+                  }`}
+                >
+                  <Zap className="h-4 w-4" />
+                  {activating ? 'Updating...' : activePresetId === selectedPreset.id ? 'Active in Glass' : 'Use in Glass'}
+                </button>
+              )}
               <button
                 onClick={handleCreateNewPreset}
                 disabled={saving}
@@ -233,6 +273,11 @@ export default function PersonalizePage() {
                   {preset.is_default === 1 && (
                     <div className="absolute top-2 right-2 bg-yellow-100 text-yellow-800 text-xs px-2 py-1 rounded-full">
                       Default
+                    </div>
+                  )}
+                  {activePresetId === preset.id && (
+                    <div className="absolute top-2 left-2 bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full">
+                      Active
                     </div>
                   )}
                   <h3 className="font-semibold text-gray-900 mb-3 text-center text-sm">

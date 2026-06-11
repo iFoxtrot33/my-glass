@@ -42,11 +42,13 @@ function createSTT({
     sampleRate = 24000,
     callbacks = {},
   }) {
+    // nova-3 only supports monolingual English; other languages need 'multi'
+    const dgLanguage = (language === 'en' || language === 'en-US') ? language : 'multi';
     const qs = new URLSearchParams({
       model: 'nova-3',
       encoding: 'linear16',
       sample_rate: sampleRate.toString(),
-      language,
+      language: dgLanguage,
       smart_format: 'true',
       interim_results: 'true',
       channels: '1',

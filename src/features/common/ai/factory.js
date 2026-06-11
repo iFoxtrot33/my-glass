@@ -22,10 +22,14 @@ const PROVIDERS = {
       name: 'OpenAI',
       handler: () => require("./providers/openai"),
       llmModels: [
-          { id: 'gpt-4.1', name: 'GPT-4.1' },
+          { id: 'gpt-5.4', name: 'GPT-5.4' },
+          { id: 'gpt-5.5', name: 'GPT-5.5' },
+          { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini' },
+          { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano' },
       ],
       sttModels: [
-          { id: 'gpt-4o-mini-transcribe', name: 'GPT-4o Mini Transcribe' }
+          { id: 'gpt-4o-mini-transcribe', name: 'GPT-4o Mini Transcribe' },
+          { id: 'gpt-4o-transcribe', name: 'GPT-4o Transcribe' }
       ],
   },
 

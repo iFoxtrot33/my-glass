@@ -1,6 +1,18 @@
 import { html, css, LitElement } from '../assets/lit-core-2.7.4.min.js';
 // import { getOllamaProgressTracker } from '../../features/common/services/localProgressTracker.js'; // 제거됨
 
+const DIALOG_LANGUAGES = [
+    { id: 'en', name: 'English' },
+    { id: 'ru', name: 'Russian' },
+];
+
+const PROGRAMMING_LANGUAGE_OPTIONS = [
+    'Python', 'JavaScript', 'TypeScript', 'Java', 'C#', 'C++', 'Go', 'Rust',
+    'Kotlin', 'Swift', 'PHP', 'Ruby', 'SQL',
+    'React', 'Vue', 'Angular', 'Node.js',
+    'Solidity', 'Web3.js/Ethers.js', 'Smart Contracts (EVM)',
+];
+
 export class SettingsView extends LitElement {
     static styles = css`
         * {
@@ -416,6 +428,14 @@ export class SettingsView extends LitElement {
         }
         .model-item:hover { background-color: rgba(255,255,255,0.1); }
         .model-item.selected { background-color: rgba(0, 122, 255, 0.4); font-weight: 500; }
+        .checkbox-item { justify-content: flex-start; gap: 6px; }
+        .checkbox {
+            width: 12px; height: 12px; border: 1px solid rgba(255,255,255,0.4);
+            border-radius: 2px; display: inline-flex; align-items: center;
+            justify-content: center; font-size: 9px; line-height: 1; flex-shrink: 0;
+        }
+        .checkbox.checked { background-color: rgba(0, 122, 255, 0.8); border-color: rgba(0, 122, 255, 0.8); }
+        .prog-lang-list { max-height: 160px; }
         .model-status { 
             font-size: 9px; 
             color: rgba(255,255,255,0.6); 
@@ -497,6 +517,10 @@ export class SettingsView extends LitElement {
         presets: { type: Array, state: true },
         selectedPreset: { type: Object, state: true },
         showPresets: { type: Boolean, state: true },
+        dialogLanguage: { type: String, state: true },
+        programmingLanguages: { type: Array, state: true },
+        isDialogLangListVisible: { type: Boolean },
+        isProgLangListVisible: { type: Boolean },
         autoUpdateEnabled: { type: Boolean, state: true },
         autoUpdateLoading: { type: Boolean, state: true },
         // Ollama related properties
@@ -527,6 +551,10 @@ export class SettingsView extends LitElement {
         this.presets = [];
         this.selectedPreset = null;
         this.showPresets = false;
+        this.dialogLanguage = 'en';
+        this.programmingLanguages = [];
+        this.isDialogLangListVisible = false;
+        this.isProgLangListVisible = false;
         // Ollama related
         this.ollamaStatus = { installed: false, running: false };
         this.ollamaModels = [];
@@ -613,12 +641,13 @@ export class SettingsView extends LitElement {
         this.isLoading = true;
         try {
             // Load essential data first
-            const [userState, modelSettings, presets, contentProtection, shortcuts] = await Promise.all([
+            const [userState, modelSettings, presets, contentProtection, shortcuts, appSettings] = await Promise.all([
                 window.api.settingsView.getCurrentUser(),
                 window.api.settingsView.getModelSettings(), // Facade call
                 window.api.settingsView.getPresets(),
                 window.api.settingsView.getContentProtectionStatus(),
-                window.api.settingsView.getCurrentShortcuts()
+                window.api.settingsView.getCurrentShortcuts(),
+                window.api.settingsView.getSettings()
             ]);
             
             if (userState && userState.isLoggedIn) this.firebaseUser = userState;
@@ -636,10 +665,12 @@ export class SettingsView extends LitElement {
             this.presets = presets || [];
             this.isContentProtectionOn = contentProtection;
             this.shortcuts = shortcuts || {};
-            if (this.presets.length > 0) {
-                const firstUserPreset = this.presets.find(p => p.is_default === 0);
-                if (firstUserPreset) this.selectedPreset = firstUserPreset;
-            }
+            this.dialogLanguage = appSettings?.dialogLanguage || 'en';
+            this.programmingLanguages = Array.isArray(appSettings?.programmingLanguages) ? appSettings.programmingLanguages : [];
+            // A selected preset is injected into prompts with top priority, so
+            // only restore a persisted choice — never auto-pick one.
+            this.selectedPreset = (appSettings?.selectedPresetId
+                && this.presets.find(p => p.id === appSettings.selectedPresetId && p.is_default === 0)) || null;
             
             // Load LocalAI status asynchronously to improve initial load time
             this.loadLocalAIStatus();
@@ -965,6 +996,14 @@ export class SettingsView extends LitElement {
         this._settingsUpdatedListener = (event, settings) => {
             console.log('[SettingsView] Received settings-updated');
             this.settings = settings;
+            // Keep interview controls in sync when settings change elsewhere
+            // (e.g. the active preset toggled from the web Personalize page)
+            if (settings) {
+                if (settings.dialogLanguage) this.dialogLanguage = settings.dialogLanguage;
+                if (Array.isArray(settings.programmingLanguages)) this.programmingLanguages = settings.programmingLanguages;
+                this.selectedPreset = (settings.selectedPresetId
+                    && this.presets.find(p => p.id === settings.selectedPresetId && p.is_default === 0)) || null;
+            }
             this.requestUpdate();
         };
 
@@ -978,7 +1017,10 @@ export class SettingsView extends LitElement {
                 // 현재 선택된 프리셋이 삭제되었는지 확인 (사용자 프리셋만 고려)
                 const userPresets = this.presets.filter(p => p.is_default === 0);
                 if (this.selectedPreset && !userPresets.find(p => p.id === this.selectedPreset.id)) {
-                    this.selectedPreset = userPresets.length > 0 ? userPresets[0] : null;
+                    // The selected preset is injected into prompts, so never
+                    // silently substitute another one — clear the selection.
+                    this.selectedPreset = null;
+                    await this.persistSettings({ selectedPresetId: null }, 'preset selection');
                 }
                 
                 this.requestUpdate();
@@ -1088,10 +1130,57 @@ export class SettingsView extends LitElement {
         this.showPresets = !this.showPresets;
     }
 
+    // saveSettings resolves with { success: false } on store-write failures
+    // instead of rejecting, so a bare try/catch around it never fires.
+    async persistSettings(patch, what) {
+        try {
+            const result = await window.api.settingsView.saveSettings(patch);
+            if (!result?.success) {
+                console.error(`Failed to persist ${what}:`, result?.error || 'unknown error');
+            }
+            return result?.success === true;
+        } catch (error) {
+            console.error(`Failed to persist ${what}:`, error);
+            return false;
+        }
+    }
+
     async handlePresetSelect(preset) {
-        this.selectedPreset = preset;
-        // Here you could implement preset application logic
-        console.log('Selected preset:', preset);
+        // Clicking the selected preset again deselects it, so "no preset" stays reachable
+        const previous = this.selectedPreset;
+        const isDeselect = this.selectedPreset?.id === preset.id;
+        this.selectedPreset = isDeselect ? null : preset;
+        const persisted = await this.persistSettings({ selectedPresetId: isDeselect ? null : preset.id }, 'preset selection');
+        if (!persisted) {
+            // Don't show a selection the prompt engine won't actually use
+            this.selectedPreset = previous;
+            this.requestUpdate();
+        }
+    }
+
+    toggleDialogLangList() {
+        this.isDialogLangListVisible = !this.isDialogLangListVisible;
+        this.requestUpdate();
+    }
+
+    async selectDialogLanguage(langId) {
+        this.dialogLanguage = langId;
+        this.isDialogLangListVisible = false;
+        this.requestUpdate();
+        await this.persistSettings({ dialogLanguage: langId }, 'dialog language');
+    }
+
+    toggleProgLangList() {
+        this.isProgLangListVisible = !this.isProgLangListVisible;
+        this.requestUpdate();
+    }
+
+    async toggleProgrammingLanguage(lang) {
+        this.programmingLanguages = this.programmingLanguages.includes(lang)
+            ? this.programmingLanguages.filter(l => l !== lang)
+            : [...this.programmingLanguages, lang];
+        this.requestUpdate();
+        await this.persistSettings({ programmingLanguages: this.programmingLanguages }, 'programming languages');
     }
 
     handleMoveLeft() {
@@ -1347,6 +1436,48 @@ export class SettingsView extends LitElement {
             </div>
         `;
 
+        const dialogLangName = DIALOG_LANGUAGES.find(l => l.id === this.dialogLanguage)?.name || 'English';
+        const interviewSettingsHTML = html`
+            <div class="model-selection-section">
+                <div class="model-select-group">
+                    <label>Dialog Language: <strong>${dialogLangName}</strong></label>
+                    <button class="settings-button full-width" @click=${() => this.toggleDialogLangList()} ?disabled=${this.saving}>
+                        Change Dialog Language
+                    </button>
+                    ${this.isDialogLangListVisible ? html`
+                        <div class="model-list">
+                            ${DIALOG_LANGUAGES.map(lang => html`
+                                <div class="model-item ${this.dialogLanguage === lang.id ? 'selected' : ''}"
+                                     @click=${() => this.selectDialogLanguage(lang.id)}>
+                                    <span>${lang.name}</span>
+                                </div>
+                            `)}
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="model-select-group">
+                    <label>Interview Languages: <strong>${this.programmingLanguages.length > 0 ? `${this.programmingLanguages.length} selected` : 'None'}</strong></label>
+                    <button class="settings-button full-width" @click=${() => this.toggleProgLangList()} ?disabled=${this.saving}>
+                        Select Interview Tech Stack
+                    </button>
+                    ${this.isProgLangListVisible ? html`
+                        <div class="model-list prog-lang-list">
+                            ${PROGRAMMING_LANGUAGE_OPTIONS.map(lang => {
+                                const checked = this.programmingLanguages.includes(lang);
+                                return html`
+                                    <div class="model-item checkbox-item ${checked ? 'selected' : ''}"
+                                         @click=${() => this.toggleProgrammingLanguage(lang)}>
+                                        <span class="checkbox ${checked ? 'checked' : ''}">${checked ? '✓' : ''}</span>
+                                        <span>${lang}</span>
+                                    </div>
+                                `;
+                            })}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+
         return html`
             <div class="settings-container">
                 <div class="header-section">
@@ -1368,6 +1499,7 @@ export class SettingsView extends LitElement {
 
                 ${apiKeyManagementHTML}
                 ${modelSelectionHTML}
+                ${interviewSettingsHTML}
 
                 <div class="buttons-section" style="border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 6px; margin-top: 6px;">
                     <button class="settings-button full-width" @click=${this.openShortcutEditor}>

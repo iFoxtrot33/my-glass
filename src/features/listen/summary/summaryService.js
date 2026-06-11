@@ -1,5 +1,6 @@
 const { BrowserWindow } = require('electron');
 const { getSystemPrompt } = require('../../common/prompts/promptBuilder.js');
+const { getPromptRuntimeOptions } = require('../../common/prompts/promptContext.js');
 const { createLLM } = require('../../common/ai/factory');
 const sessionRepository = require('../../common/repositories/session');
 const summaryRepository = require('./repositories');
@@ -76,8 +77,11 @@ class SummaryService {
                 return;
             }
 
-            const systemPrompt = getSystemPrompt('pickle_glass_analysis', '', false, preContext)
-                .replace('{{CONVERSATION_HISTORY}}', '');
+            const promptOptions = await getPromptRuntimeOptions();
+            const systemPrompt = getSystemPrompt('interview_assistant', '', false, preContext, {
+                ...promptOptions,
+                conversationHistory: '',
+            });
 
             const messages = [
                 { role: 'system', content: systemPrompt },
@@ -102,10 +106,8 @@ Provide 2-3 sentences explaining the context and implications.
 3. Third follow-up question?
 
 **LANGUAGE INSTRUCTION:**
-- Respond in Traditional Chinese (繁體中文)
 - IMPORTANT: Keep section headers in English exactly as shown
-- Keep code snippets, technical terms, API names, libraries, frameworks, and proper nouns in English
-- Translate all content to Traditional Chinese`,
+- Keep code snippets, technical terms, API names, libraries, frameworks, and proper nouns in English`,
                 },
             ];
 
@@ -166,8 +168,14 @@ Please build upon this context while analyzing the new conversation segments.
 `;
         }
 
-        const basePrompt = getSystemPrompt('pickle_glass_analysis', '', false, this.preContext);
-        const systemPrompt = basePrompt.replace('{{CONVERSATION_HISTORY}}', recentConversation);
+        const promptOptions = await getPromptRuntimeOptions();
+        const systemPrompt = getSystemPrompt('interview_assistant', '', false, this.preContext, {
+            ...promptOptions,
+            conversationHistory: recentConversation,
+        });
+        if (process.env.GLASS_DEBUG_PROMPT) {
+            console.log('[SummaryService] System prompt:\n', systemPrompt);
+        }
 
         try {
             if (this.currentSessionId) {
@@ -210,10 +218,8 @@ Provide 2-3 sentences explaining the context and implications.
 Keep all points concise and build upon previous analysis if provided.
 
 **LANGUAGE INSTRUCTION:**
-- Respond in Traditional Chinese (繁體中文)
 - IMPORTANT: Keep section headers in English exactly as shown (do not translate "**Summary Overview**", "**Key Topic:**", "**Extended Explanation**", "**Suggested Questions**")
 - Keep code snippets, technical terms, API names, libraries, frameworks, and proper nouns in English
-- Translate all content (explanations, summaries, questions, insights) to Traditional Chinese
 - Preserve all emojis and formatting`,
                 },
             ];

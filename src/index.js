@@ -404,6 +404,15 @@ function setupWebDataHandlers() {
                     result = await presetRepository.delete(payload);
                     settingsService.notifyPresetUpdate('deleted', payload);
                     break;
+                case 'get-active-preset-id': {
+                    const settings = await settingsService.getSettings();
+                    result = { id: settings.selectedPresetId || null };
+                    break;
+                }
+                case 'set-active-preset':
+                    // null payload.id deactivates; prompts pick this up on the next request
+                    result = await settingsService.saveSettings({ selectedPresetId: payload?.id || null });
+                    break;
                 
                 // BATCH
                 case 'get-batch-data':

@@ -214,7 +214,10 @@ function getDefaultSettings() {
         googleSearchEnabled: false,
         backgroundTransparency: 0.5,
         fontSize: 14,
-        contentProtection: true
+        contentProtection: true,
+        dialogLanguage: 'en',          // 'en' | 'ru' — assistant response + STT language
+        programmingLanguages: [],      // interview tech stack injected into the system prompt
+        selectedPresetId: null         // prompt_presets.id whose prompt is injected with top priority
     };
 }
 
