@@ -41,7 +41,16 @@ async function captureScreenshot(options = {}) {
         try {
             const tempPath = path.join(os.tmpdir(), `screenshot-${Date.now()}.jpg`);
 
-            await execFile('screencapture', ['-x', '-t', 'jpg', tempPath]);
+            // Which monitor to capture (screencapture -D: 1 = main, 2 = secondary, ...)
+            let displayArg = '-D1';
+            try {
+                const settingsService = require('../settings/settingsService');
+                const settings = await settingsService.getSettings();
+                const d = parseInt(settings.screenshotDisplay, 10);
+                if (d && d > 0) displayArg = `-D${d}`;
+            } catch (e) { /* fall back to main display */ }
+
+            await execFile('screencapture', ['-x', '-t', 'jpg', displayArg, tempPath]);
 
             const imageBuffer = await fs.promises.readFile(tempPath);
             await fs.promises.unlink(tempPath);
@@ -157,7 +166,7 @@ class AskService {
             // here would risk a cycle.
             let conversationHistory = [];
             try {
-                conversationHistory = require('../listen/listenService').getConversationHistory();
+                conversationHistory = await require('../listen/listenService').getConversationHistory();
             } catch (error) {
                 console.warn('[AskService] Could not fetch conversation history:', error.message);
             }
@@ -262,6 +271,7 @@ class AskService {
 
             const screenshotResult = await captureScreenshot({ quality: 'medium' });
             const screenshotBase64 = screenshotResult.success ? screenshotResult.base64 : null;
+            console.log(`[AskService] Screenshot: ${screenshotResult.success ? `${(screenshotBase64?.length || 0)} b64 chars` : `FAILED — ${screenshotResult.error}`}`);
 
             const conversationHistory = this._formatConversationForPrompt(conversationHistoryRaw);
 
@@ -448,6 +458,15 @@ class AskService {
             this.state.isStreaming = false;
             this.state.currentResponse = fullResponse;
             this._broadcastState();
+            if (fullResponse) {
+                // TEMP diagnostic: backtick-run lengths reveal whether code fences
+                // arrive well-formed ([3,3]) or malformed ([2,1]). Remove once fixed.
+                const fences = (fullResponse.match(/`+/g) || []).map(s => s.length);
+                console.log('[AskService] Backtick runs in response:', JSON.stringify(fences));
+                if (process.env.GLASS_DEBUG_PROMPT) {
+                    console.log('[AskService] Raw response:', JSON.stringify(fullResponse));
+                }
+            }
             if (fullResponse) {
                  try {
                     await askRepository.addAiMessage({ sessionId, role: 'assistant', content: fullResponse });

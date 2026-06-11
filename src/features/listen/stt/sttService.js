@@ -3,7 +3,17 @@ const { spawn } = require('child_process');
 const { createSTT } = require('../../common/ai/factory');
 const modelStateService = require('../../common/services/modelStateService');
 
-const COMPLETION_DEBOUNCE_MS = 2000;
+// How long to wait after a provider "completed" event before flushing the turn
+// to history. Only merges back-to-back fragments of one breath; kept low so the
+// latest turn lands quickly. (Was 2000ms, which dominated perceived latency.)
+const COMPLETION_DEBOUNCE_MS = 800;
+
+// Ask grace-wait: when a question is requested right after speaking, wait up to
+// this long for the in-flight final to arrive before building the prompt.
+const INFLIGHT_MAX_WAIT_MS = 800;
+// Consider audio "active" (user may still be mid-utterance) if a packet arrived
+// within this window.
+const INFLIGHT_QUIET_MS = 400;
 
 // ── New heartbeat / renewal constants ────────────────────────────────────────────
 // Interval to send low-cost keep-alive messages so the remote service does not
@@ -44,7 +54,44 @@ class SttService {
         this.onTranscriptionComplete = null;
         this.onStatusUpdate = null;
 
-        this.modelInfo = null; 
+        this.modelInfo = null;
+
+        // In-flight transcription tracking (for the Ask grace-wait)
+        this._lastAudioAt = 0;            // timestamp of the most recent audio packet sent
+        this._inflightWaiters = [];       // resolvers awaiting the next completed event
+    }
+
+    _markAudioActivity() {
+        this._lastAudioAt = Date.now();
+    }
+
+    // Resolve anyone waiting for an in-flight transcription to land.
+    _signalTranscriptionArrived() {
+        if (this._inflightWaiters.length === 0) return;
+        const waiters = this._inflightWaiters;
+        this._inflightWaiters = [];
+        waiters.forEach(resolve => resolve());
+    }
+
+    /**
+     * If speech may still be in flight (audio was just sent, a partial is
+     * accumulating, or a completion timer is pending), wait briefly for the
+     * final to arrive so the Ask prompt includes the latest sentence. Returns
+     * immediately when nothing is in flight, so silent Asks stay instant.
+     */
+    async waitForInflightTranscription({ maxWaitMs = INFLIGHT_MAX_WAIT_MS, quietMs = INFLIGHT_QUIET_MS } = {}) {
+        const recentlyActive = (Date.now() - this._lastAudioAt) < quietMs;
+        const hasPartial = !!(this.myCurrentUtterance || this.theirCurrentUtterance);
+        const hasPendingTimer = !!(this.myCompletionTimer || this.theirCompletionTimer);
+
+        if (!recentlyActive && !hasPartial && !hasPendingTimer) return;
+
+        await new Promise(resolve => {
+            let settled = false;
+            const done = () => { if (settled) return; settled = true; clearTimeout(timer); resolve(); };
+            const timer = setTimeout(done, maxWaitMs);
+            this._inflightWaiters.push(done);
+        });
     }
 
     setCallbacks({ onTranscriptionComplete, onStatusUpdate }) {
@@ -153,6 +200,9 @@ class SttService {
             this.myCompletionBuffer += (this.myCompletionBuffer ? ' ' : '') + text;
         }
 
+        // A final arrived — unblock any Ask grace-wait.
+        this._signalTranscriptionArrived();
+
         if (this.myCompletionTimer) clearTimeout(this.myCompletionTimer);
         this.myCompletionTimer = setTimeout(() => this.flushMyCompletion(), COMPLETION_DEBOUNCE_MS);
     }
@@ -163,6 +213,9 @@ class SttService {
         } else {
             this.theirCompletionBuffer += (this.theirCompletionBuffer ? ' ' : '') + text;
         }
+
+        // A final arrived — unblock any Ask grace-wait.
+        this._signalTranscriptionArrived();
 
         if (this.theirCompletionTimer) clearTimeout(this.theirCompletionTimer);
         this.theirCompletionTimer = setTimeout(() => this.flushTheirCompletion(), COMPLETION_DEBOUNCE_MS);
@@ -570,6 +623,7 @@ class SttService {
         if (!this.mySttSession) {
             throw new Error('User STT session not active');
         }
+        this._markAudioActivity();
 
         let modelInfo = this.modelInfo;
         if (!modelInfo) {
@@ -595,6 +649,7 @@ class SttService {
         if (!this.theirSttSession) {
             throw new Error('Their STT session not active');
         }
+        this._markAudioActivity();
 
         let modelInfo = this.modelInfo;
         if (!modelInfo) {
@@ -704,6 +759,7 @@ class SttService {
                 this.sendToRenderer('system-audio-data', { data: base64Data });
 
                 if (this.theirSttSession) {
+                    this._markAudioActivity();
                     try {
                         let payload;
                         if (modelInfo.provider === 'gemini') {

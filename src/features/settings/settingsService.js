@@ -217,7 +217,8 @@ function getDefaultSettings() {
         contentProtection: true,
         dialogLanguage: 'en',          // 'en' | 'ru' — assistant response + STT language
         programmingLanguages: [],      // interview tech stack injected into the system prompt
-        selectedPresetId: null         // prompt_presets.id whose prompt is injected with top priority
+        selectedPresetId: null,        // prompt_presets.id whose prompt is injected with top priority
+        screenshotDisplay: 1           // screencapture -D index: 1 = main monitor, 2 = secondary, ...
     };
 }
 

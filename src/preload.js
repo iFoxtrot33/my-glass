@@ -234,6 +234,7 @@ contextBridge.exposeInMainWorld('api', {
     // Settings Management
     getSettings: () => ipcRenderer.invoke('settings:get-settings'),
     saveSettings: (settings) => ipcRenderer.invoke('settings:save-settings', settings),
+    getDisplays: () => ipcRenderer.invoke('settings:get-displays'),
     getPresets: () => ipcRenderer.invoke('settings:getPresets'),
     getAutoUpdate: () => ipcRenderer.invoke('settings:get-auto-update'),
     setAutoUpdate: (isEnabled) => ipcRenderer.invoke('settings:set-auto-update', isEnabled),

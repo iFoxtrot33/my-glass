@@ -521,6 +521,9 @@ export class SettingsView extends LitElement {
         programmingLanguages: { type: Array, state: true },
         isDialogLangListVisible: { type: Boolean },
         isProgLangListVisible: { type: Boolean },
+        screenshotDisplay: { type: Number, state: true },
+        displays: { type: Array, state: true },
+        isDisplayListVisible: { type: Boolean },
         autoUpdateEnabled: { type: Boolean, state: true },
         autoUpdateLoading: { type: Boolean, state: true },
         // Ollama related properties
@@ -552,6 +555,9 @@ export class SettingsView extends LitElement {
         this.selectedPreset = null;
         this.showPresets = false;
         this.dialogLanguage = 'en';
+        this.screenshotDisplay = 1;
+        this.displays = [];
+        this.isDisplayListVisible = false;
         this.programmingLanguages = [];
         this.isDialogLangListVisible = false;
         this.isProgLangListVisible = false;
@@ -641,13 +647,14 @@ export class SettingsView extends LitElement {
         this.isLoading = true;
         try {
             // Load essential data first
-            const [userState, modelSettings, presets, contentProtection, shortcuts, appSettings] = await Promise.all([
+            const [userState, modelSettings, presets, contentProtection, shortcuts, appSettings, displays] = await Promise.all([
                 window.api.settingsView.getCurrentUser(),
                 window.api.settingsView.getModelSettings(), // Facade call
                 window.api.settingsView.getPresets(),
                 window.api.settingsView.getContentProtectionStatus(),
                 window.api.settingsView.getCurrentShortcuts(),
-                window.api.settingsView.getSettings()
+                window.api.settingsView.getSettings(),
+                window.api.settingsView.getDisplays().catch(() => [])
             ]);
             
             if (userState && userState.isLoggedIn) this.firebaseUser = userState;
@@ -667,6 +674,8 @@ export class SettingsView extends LitElement {
             this.shortcuts = shortcuts || {};
             this.dialogLanguage = appSettings?.dialogLanguage || 'en';
             this.programmingLanguages = Array.isArray(appSettings?.programmingLanguages) ? appSettings.programmingLanguages : [];
+            this.displays = Array.isArray(displays) ? displays : [];
+            this.screenshotDisplay = appSettings?.screenshotDisplay || 1;
             // A selected preset is injected into prompts with top priority, so
             // only restore a persisted choice — never auto-pick one.
             this.selectedPreset = (appSettings?.selectedPresetId
@@ -1001,6 +1010,7 @@ export class SettingsView extends LitElement {
             if (settings) {
                 if (settings.dialogLanguage) this.dialogLanguage = settings.dialogLanguage;
                 if (Array.isArray(settings.programmingLanguages)) this.programmingLanguages = settings.programmingLanguages;
+                if (settings.screenshotDisplay) this.screenshotDisplay = settings.screenshotDisplay;
                 this.selectedPreset = (settings.selectedPresetId
                     && this.presets.find(p => p.id === settings.selectedPresetId && p.is_default === 0)) || null;
             }
@@ -1168,6 +1178,18 @@ export class SettingsView extends LitElement {
         this.isDialogLangListVisible = false;
         this.requestUpdate();
         await this.persistSettings({ dialogLanguage: langId }, 'dialog language');
+    }
+
+    toggleDisplayList() {
+        this.isDisplayListVisible = !this.isDisplayListVisible;
+        this.requestUpdate();
+    }
+
+    async selectDisplay(index) {
+        this.screenshotDisplay = index;
+        this.isDisplayListVisible = false;
+        this.requestUpdate();
+        await this.persistSettings({ screenshotDisplay: index }, 'screenshot display');
     }
 
     toggleProgLangList() {
@@ -1475,6 +1497,24 @@ export class SettingsView extends LitElement {
                         </div>
                     ` : ''}
                 </div>
+                ${this.displays.length > 1 ? html`
+                <div class="model-select-group">
+                    <label>Screenshot Monitor: <strong>${(this.displays.find(d => d.index === this.screenshotDisplay)?.label) || `Display ${this.screenshotDisplay}`}</strong></label>
+                    <button class="settings-button full-width" @click=${() => this.toggleDisplayList()} ?disabled=${this.saving}>
+                        Change Screenshot Monitor
+                    </button>
+                    ${this.isDisplayListVisible ? html`
+                        <div class="model-list">
+                            ${this.displays.map(d => html`
+                                <div class="model-item ${this.screenshotDisplay === d.index ? 'selected' : ''}"
+                                     @click=${() => this.selectDisplay(d.index)}>
+                                    <span>${d.label}</span>
+                                </div>
+                            `)}
+                        </div>
+                    ` : ''}
+                </div>
+                ` : ''}
             </div>
         `;
 

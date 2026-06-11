@@ -292,9 +292,12 @@ class ListenService {
         };
     }
 
-    getConversationHistory() {
-        // Push any debounced/partial utterances into the history first, so
-        // a question spoken a moment ago is included in the Ask prompt.
+    async getConversationHistory() {
+        // If speech is still in flight (you spoke and hit Ask immediately),
+        // wait briefly for the final to land — otherwise the last sentence
+        // would be missing from the prompt. Returns instantly when idle.
+        await this.sttService.waitForInflightTranscription();
+        // Push any debounced/partial utterances into the history.
         this.sttService.flushPendingTranscriptions();
         return this.summaryService.getConversationHistory();
     }

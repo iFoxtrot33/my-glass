@@ -19,6 +19,18 @@ module.exports = {
     // Settings Service
     ipcMain.handle('settings:get-settings', async () => await settingsService.getSettings());
     ipcMain.handle('settings:save-settings', async (event, settings) => await settingsService.saveSettings(settings));
+    ipcMain.handle('settings:get-displays', async () => {
+      const { screen } = require('electron');
+      // -D index is 1-based with the primary display first; mirror that order.
+      const displays = screen.getAllDisplays();
+      const primaryId = screen.getPrimaryDisplay().id;
+      const ordered = [...displays].sort((a, b) => (a.id === primaryId ? -1 : b.id === primaryId ? 1 : 0));
+      return ordered.map((d, i) => ({
+        index: i + 1,
+        primary: d.id === primaryId,
+        label: `Display ${i + 1}${d.id === primaryId ? ' (main)' : ''} — ${d.size.width}×${d.size.height}`,
+      }));
+    });
     ipcMain.handle('settings:getPresets', async () => await settingsService.getPresets());
     ipcMain.handle('settings:get-auto-update', async () => await settingsService.getAutoUpdateSetting());
     ipcMain.handle('settings:set-auto-update', async (event, isEnabled) => await settingsService.setAutoUpdateSetting(isEnabled));  
@@ -83,12 +95,12 @@ module.exports = {
     // Ask
     ipcMain.handle('ask:sendQuestionFromAsk', async (event, userPrompt) => {
       // Ask must see the live transcript too, not just the screenshot
-      const conversationHistory = listenService.getConversationHistory();
+      const conversationHistory = await listenService.getConversationHistory();
       return await askService.sendMessage(userPrompt, conversationHistory);
     });
     ipcMain.handle('ask:sendQuestionFromSummary', async (event, userPrompt) => {
       // Get conversation history from Listen feature to provide context
-      const conversationHistory = listenService.getConversationHistory();
+      const conversationHistory = await listenService.getConversationHistory();
       return await askService.sendMessage(userPrompt, conversationHistory);
     });
     ipcMain.handle('ask:toggleAskButton', async () => await askService.toggleAskButton());

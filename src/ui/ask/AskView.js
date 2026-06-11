@@ -137,7 +137,7 @@ export class AskView extends LitElement {
             background: rgba(255, 255, 255, 0.1) !important;
             padding: 2px 4px !important;
             border-radius: 3px !important;
-            color: #ffd700 !important;
+            color: #e6c07b !important;
         }
 
         .hljs-keyword {
@@ -148,6 +148,7 @@ export class AskView extends LitElement {
         }
         .hljs-comment {
             color: #6272a4 !important;
+            font-style: italic;
         }
         .hljs-number {
             color: #bd93f9 !important;
@@ -375,6 +376,15 @@ export class AskView extends LitElement {
 
         .response-container.hidden {
             display: none;
+        }
+
+        /* Raw text shown while the answer is still streaming in — smooth, no
+           flicker, no per-token markdown re-parse. Formatted once at the end. */
+        .response-container.streaming-raw {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
         }
 
         .response-container::-webkit-scrollbar {
@@ -841,16 +851,19 @@ export class AskView extends LitElement {
 
     async loadLibraries() {
         try {
+            // Paths resolve against the document (src/ui/app/content.html),
+            // not this file — '../assets/' is src/ui/assets/. Normally these are
+            // already present via content.html <script> tags.
             if (!window.marked) {
-                await this.loadScript('../../assets/marked-4.3.0.min.js');
+                await this.loadScript('../assets/marked-4.3.0.min.js');
             }
 
             if (!window.hljs) {
-                await this.loadScript('../../assets/highlight-11.9.0.min.js');
+                await this.loadScript('../assets/highlight-11.9.0.min.js');
             }
 
             if (!window.DOMPurify) {
-                await this.loadScript('../../assets/dompurify-3.0.7.min.js');
+                await this.loadScript('../assets/dompurify-3.0.7.min.js');
             }
 
             this.marked = window.marked;
@@ -993,9 +1006,10 @@ export class AskView extends LitElement {
     renderContent() {
         const responseContainer = this.shadowRoot.getElementById('responseContainer');
         if (!responseContainer) return;
-    
+
         // Check loading state
         if (this.isLoading) {
+            responseContainer.classList.remove('streaming-raw');
             responseContainer.innerHTML = `
               <div class="loading-dots">
                 <div class="loading-dot"></div>
@@ -1005,16 +1019,47 @@ export class AskView extends LitElement {
             this.resetStreamingParser();
             return;
         }
-        
+
         // If there is no response, show empty state
         if (!this.currentResponse) {
+            responseContainer.classList.remove('streaming-raw');
             responseContainer.innerHTML = `<div class="empty-state">...</div>`;
             this.resetStreamingParser();
             return;
         }
-        
-        // Set streaming markdown parser
-        this.renderStreamingMarkdown(responseContainer);
+
+        // While STREAMING: show raw text (monospace, newlines preserved). This is
+        // a cheap text-node update — smooth, no flicker, and no parsing of
+        // half-written markdown (an unclosed ``` fence would otherwise render
+        // as garbled "code mixed with text"). Markdown + code blocks + syntax
+        // highlight are applied ONCE when streaming ends.
+        if (this.isStreaming) {
+            const prevScrollTop = responseContainer.scrollTop;
+            const wasAtBottom = (responseContainer.scrollHeight - responseContainer.clientHeight - prevScrollTop) <= 40;
+            responseContainer.classList.add('streaming-raw');
+            responseContainer.textContent = this.currentResponse;
+            responseContainer.scrollTop = wasAtBottom ? responseContainer.scrollHeight : prevScrollTop;
+            this.adjustWindowHeightThrottled();
+        } else {
+            responseContainer.classList.remove('streaming-raw');
+            this._renderResponseNow();
+        }
+    }
+
+    _renderResponseNow() {
+        const responseContainer = this.shadowRoot.getElementById('responseContainer');
+        if (!responseContainer) return;
+        responseContainer.classList.remove('streaming-raw');
+
+        // Full re-render replaces innerHTML (which resets scroll). Preserve the
+        // user's position: follow the stream only when they're already at the
+        // bottom; if they scrolled up to read, keep them there.
+        const prevScrollTop = responseContainer.scrollTop;
+        const wasAtBottom = (responseContainer.scrollHeight - responseContainer.clientHeight - prevScrollTop) <= 40;
+
+        this.renderFallbackContent(responseContainer);
+
+        responseContainer.scrollTop = wasAtBottom ? responseContainer.scrollHeight : prevScrollTop;
 
         // After updating content, recalculate window height
         this.adjustWindowHeightThrottled();
@@ -1074,8 +1119,18 @@ export class AskView extends LitElement {
         }
     }
 
+    // Repair malformed code fences before markdown parsing. The model/stream
+    // sometimes emits a fence line as 1-2 backticks (e.g. "``go") instead of 3,
+    // which marked then treats as an inline code span that swallows the code,
+    // comments, and surrounding prose (rendered yellow). Bump standalone
+    // 1-2 backtick fence lines to a proper ``` fence. Correct 3-backtick fences
+    // and inline code with content are left untouched.
+    normalizeCodeFences(text) {
+        return text.replace(/^([ \t]*)`{1,2}[ \t]*([a-zA-Z0-9_+#.-]*)[ \t]*$/gm, '$1```$2');
+    }
+
     renderFallbackContent(responseContainer) {
-        const textToRender = this.currentResponse || '';
+        const textToRender = this.normalizeCodeFences(this.currentResponse || '');
         
         if (this.isLibrariesLoaded && this.marked && this.DOMPurify) {
             try {
@@ -1204,7 +1259,9 @@ export class AskView extends LitElement {
     async handleCopy() {
         if (this.copyState === 'copied') return;
 
-        let responseToCopy = this.currentResponse;
+        // Copy with repaired code fences so the markdown is valid when pasted
+        // elsewhere, even if the stored response predates the stream fix.
+        let responseToCopy = this.normalizeCodeFences(this.currentResponse);
 
         if (this.isDOMPurifyLoaded && this.DOMPurify) {
             const testHtml = this.renderMarkdown(responseToCopy);
@@ -1302,7 +1359,8 @@ export class AskView extends LitElement {
         super.updated(changedProperties);
     
         // ✨ isLoading 또는 currentResponse가 변경될 때마다 뷰를 다시 그립니다.
-        if (changedProperties.has('isLoading') || changedProperties.has('currentResponse')) {
+        // isStreaming도 감시: 스트리밍이 끝나는 순간(텍스트가 안 바뀌어도) 최종 마크다운 렌더가 보장됨.
+        if (changedProperties.has('isLoading') || changedProperties.has('currentResponse') || changedProperties.has('isStreaming')) {
             this.renderContent();
         }
     

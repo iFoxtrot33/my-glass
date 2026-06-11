@@ -88,7 +88,10 @@ async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey =
                 type: 'server_vad',
                 threshold: 0.5,
                 prefix_padding_ms: 200,
-                silence_duration_ms: 500,
+                // Close the turn after 300ms of trailing silence (was 500) so
+                // finals arrive ~200ms sooner. Going below ~250ms would split
+                // sentences on natural mid-speech pauses.
+                silence_duration_ms: 300,
               },
             },
           },
